@@ -85,6 +85,7 @@ Options:
                                 May be repeated.
   --changed                     Mutate added and modified source files from
                                 git status.
+  --base <ref>                  Also include changes since the merge base with ref.
   --scan                        List mutation sites. Do not run tests or
                                 write metrics.
   --mutate-all                  Run every covered site, including ones the
@@ -172,6 +173,7 @@ class Options:
     mutation_warning: int = 50
     max_workers: int | None = None
     changed: bool = False
+    base: str | None = None
     verbose: bool = False
 
 
@@ -257,6 +259,11 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 options.use_existing_coverage = True
                 index += 1
                 continue
+            if arg == "--base":
+                options.base = _take(args, index, arg)
+                options.changed = True
+                index += 2
+                continue
             if arg == "--changed":
                 options.changed = True
                 index += 1
@@ -332,7 +339,7 @@ def _git(root: Path, *args: str) -> bytes:
     return result.stdout
 
 
-def _changed_files(root: Path) -> list[Path]:
+def _changed_files(root: Path, base: str | None = None) -> list[Path]:
     """Added and modified files under `root`, as paths from the repo root.
 
     `-z` keeps spaces and non-ASCII names intact. A missing path, including a
@@ -359,7 +366,11 @@ def _changed_files(root: Path) -> list[Path]:
         if not path.is_file() or not path.is_relative_to(root_resolved):
             continue
         found.append(path)
-    return found
+    if base is not None:
+        from crapper.git_changes import paths_since_base
+
+        found.extend(paths_since_base(root_resolved, toplevel, base, lambda *args: os.fsdecode(_git(root, *args))))
+    return list(dict.fromkeys(found))
 
 
 def _positionals(root: Path, args: list[str]) -> tuple[list[Path], list[str]]:
@@ -376,8 +387,8 @@ def _positionals(root: Path, args: list[str]) -> tuple[list[Path], list[str]]:
     return existing, filters
 
 
-def _changed_sources(root: Path, crapper) -> list[Path]:
-    return [path for path in _changed_files(root) if is_mutable_source(path, root, crapper)]
+def _changed_sources(root: Path, crapper, base: str | None) -> list[Path]:
+    return [path for path in _changed_files(root, base) if is_mutable_source(path, root, crapper)]
 
 
 def _explicit_sources(existing: list[Path], root: Path, crapper) -> list[Path]:
@@ -396,7 +407,7 @@ def _explicit_sources(existing: list[Path], root: Path, crapper) -> list[Path]:
 
 def _choose_files(options: Options, root: Path, existing: list[Path], crapper) -> list[Path]:
     if options.changed:
-        return _changed_sources(root, crapper)
+        return _changed_sources(root, crapper, options.base)
     if options.source_roots:
         starts = [(root / path).resolve() for path in options.source_roots]
         return iter_source_files(starts, root, crapper)
